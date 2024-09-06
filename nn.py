@@ -9,7 +9,7 @@ class SimpleNN:
         self.biases = biases
 
     def forward(self):
-        # Calcular z = x * weights + biases
+        # z = x * weights + biases
         self.z = self.x.dot(self.weights) + self.biases
         return self.z
 
