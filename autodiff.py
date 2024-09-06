@@ -1,97 +1,159 @@
 import numpy as np
 
+import numpy as np
+
 class Variable:
-    def __init__(self, value, derivative=0):
-        self.value = value
-        self.derivative = derivative
-        self._grad = 0  # Gradient for backward accumulation
-        self._backward = lambda: None  # Function to compute gradient
-    
+    def __init__(self, value, _children=(), _op=''):
+        self.value = np.array(value, dtype=float)
+        self.grad = np.zeros_like(self.value)  # Gradiente acumulado
+        self._backward = lambda: None  # Función para retropropagar
+        self._prev = set(_children)  # Variables padre en el grafo
+        self._op = _op  # Operación que creó esta variable (para depuración)
+
     def __add__(self, other):
-        if not isinstance(other, Variable):
-            other = Variable(other)
-        result = Variable(self.value + other.value)
-        result._backward = lambda: (self._grad + other._grad)
-        result.derivative = self.derivative + other.derivative
-        return result
+        other = other if isinstance(other, Variable) else Variable(other)
+        out = Variable(self.value + other.value, (self, other), '+')
+
+        def _backward():
+            self.grad += out.grad
+            other.grad += out.grad
+        out._backward = _backward
+
+        return out
+
+    def __radd__(self, other):
+        return self + other
 
     def __sub__(self, other):
-        if not isinstance(other, Variable):
-            other = Variable(other)
-        result = Variable(self.value - other.value)
-        result._backward = lambda: (self._grad - other._grad)
-        result.derivative = self.derivative - other.derivative
-        return result
+        other = other if isinstance(other, Variable) else Variable(other)
+        out = Variable(self.value - other.value, (self, other), '-')
+
+        def _backward():
+            self.grad += out.grad
+            other.grad -= out.grad
+        out._backward = _backward
+
+        return out
+
+    def __rsub__(self, other):
+        other = other if isinstance(other, Variable) else Variable(other)
+        return other - self
 
     def __mul__(self, other):
-        if isinstance(other, Variable):
-            result = Variable(self.value * other.value)
-            result._backward = lambda: (self._grad * other.value + self.value * other._grad)
-            result.derivative = self.derivative * other.value + self.value * other.derivative
-        else:
-            result = Variable(self.value * other)
-            result._backward = lambda: (self._grad * other)
-            result.derivative = self.derivative * other
-        return result
+        other = other if isinstance(other, Variable) else Variable(other)
+        out = Variable(self.value * other.value, (self, other), '*')
+
+        def _backward():
+            self.grad += other.value * out.grad
+            other.grad += self.value * out.grad
+        out._backward = _backward
+
+        return out
+
+    def __rmul__(self, other):
+        return self * other
 
     def __truediv__(self, other):
-        if isinstance(other, Variable):
-            result = Variable(self.value / other.value)
-            result._backward = lambda: ((self._grad * other.value - self.value * other._grad) / (other.value**2))
-            result.derivative = (self.derivative * other.value - self.value * other.derivative) / (other.value**2)
-        else:
-            result = Variable(self.value / other)
-            result._backward = lambda: (self._grad / other)
-            result.derivative = self.derivative / other
-        return result
+        other = other if isinstance(other, Variable) else Variable(other)
+        out = Variable(self.value / other.value, (self, other), '/')
+
+        def _backward():
+            self.grad += (1 / other.value) * out.grad
+            other.grad -= (self.value / (other.value**2)) * out.grad
+        out._backward = _backward
+
+        return out
+
+    def __rtruediv__(self, other):
+        other = other if isinstance(other, Variable) else Variable(other)
+        return other / self
 
     def __pow__(self, power):
-        if isinstance(power, Variable):
-            result = Variable(self.value**power.value)
-            result._backward = lambda: (power.value * self.value**(power.value - 1) * self._grad)
-            result.derivative = power.value * self.value**(power.value - 1) * self.derivative
-        else:
-            result = Variable(self.value**power)
-            result._backward = lambda: (power * self.value**(power - 1) * self._grad)
-            result.derivative = power * self.value**(power - 1) * self.derivative
-        return result
+        assert isinstance(power, (int, float)), "Solo se soportan potencias enteras o flotantes."
+        out = Variable(self.value ** power, (self,), f'**{power}')
 
-    def sin(self):
-        result = Variable(np.sin(self.value))
-        result._backward = lambda: (np.cos(self.value) * self._grad)
-        result.derivative = np.cos(self.value) * self.derivative
-        return result
+        def _backward():
+            self.grad += (power * self.value ** (power - 1)) * out.grad
+        out._backward = _backward
 
-    def cos(self):
-        result = Variable(np.cos(self.value))
-        result._backward = lambda: (-np.sin(self.value) * self._grad)
-        result.derivative = -np.sin(self.value) * self.derivative
-        return result
+        return out
 
     def exp(self):
-        result = Variable(np.exp(self.value))
-        result._backward = lambda: (np.exp(self.value) * self._grad)
-        result.derivative = np.exp(self.value) * self.derivative
-        return result
+        out = Variable(np.exp(self.value), (self,), 'exp')
+
+        def _backward():
+            self.grad += np.exp(self.value) * out.grad
+        out._backward = _backward
+
+        return out
+
+    def sin(self):
+        out = Variable(np.sin(self.value), (self,), 'sin')
+
+        def _backward():
+            self.grad += np.cos(self.value) * out.grad
+        out._backward = _backward
+
+        return out
+
+    def cos(self):
+        out = Variable(np.cos(self.value), (self,), 'cos')
+
+        def _backward():
+            self.grad += -np.sin(self.value) * out.grad
+        out._backward = _backward
+
+        return out
+
+    def sigmoid(self):
+        sig = 1 / (1 + np.exp(-self.value))
+        out = Variable(sig, (self,), 'sigmoid')
+
+        def _backward():
+            self.grad += sig * (1 - sig) * out.grad
+        out._backward = _backward
+
+        return out
+
+    def dot(self, other):
+        other = other if isinstance(other, Variable) else Variable(other)
+        out = Variable(np.dot(self.value, other.value), (self, other), 'dot')
+
+        def _backward():
+            # La forma de out.grad es igual a la de out.value
+            self.grad += np.dot(out.grad, other.value.T)
+            other.grad += np.dot(self.value.T, out.grad)
+        out._backward = _backward
+
+        return out
+
+    def mean(self):
+        out = Variable(np.mean(self.value), (self,), 'mean')
+
+        def _backward():
+            self.grad += (1.0 / self.value.size) * np.ones_like(self.value) * out.grad
+        out._backward = _backward
+
+        return out
 
     def backward(self):
-        self._grad = 1  # Set the gradient of the output variable to 1
-        self._backward()  # Start backward pass
+        # Construir orden topológico
+        topo = []
+        visited = set()
 
-# Define the variable
-x = Variable(1.0)
+        def build_topo(v):
+            if v not in visited:
+                visited.add(v)
+                for child in v._prev:
+                    build_topo(child)
+                topo.append(v)
 
-# Define the function f(x) = (x^2 + 2x) * sin(x)
-x_squared = x ** 2
-two_x = Variable(2) * x
-intermediate = x_squared + two_x
-y = intermediate.sin()
+        build_topo(self)
 
-# Compute the gradients
-y.backward()
+        self.grad = np.ones_like(self.value)
 
-# Print the results
-print(f"Value of x: {x.value}")
-print(f"Value of y: {y.value}")
-print(f"Derivative of y with respect to x: {x._grad}")
+        for v in reversed(topo):
+            v._backward()
 
+    def __repr__(self):
+        return f"Variable(value={self.value}, grad={self.grad})"
